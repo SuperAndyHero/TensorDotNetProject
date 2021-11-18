@@ -1,0 +1,64 @@
+
+//Size 28 in
+
+5 layer generator
+5 layer discriminator
+1,000 dataset (MNIST)
+28x28 in 
+28x28 out
+3 channels
+	0.45 seconds per epoch
+	
+5 layer generator
+5 layer discriminator
+28,000 dataset (MNIST)
+28x28 in 
+28x28 out
+3 channels
+	0.80 seconds per epoch
+	
+	
+//Size 256 in
+	
+5 layer generator
+5 layer discriminator
+24 dataset
+256x256 in 
+28x28 out
+3 channels
+	0.44 seconds per epoch
+	
+5 layer generator
+5 layer discriminator
+24 dataset
+256x256 in 
+4x4 out
+3 channels
+	0.28 seconds per epoch
+	
+5 layer generator
+4 layer discriminator
+24 dataset
+256x256 in 
+4x4 out
+3 channels
+	0.23 seconds per epoch
+	
+	
+//Size 4 in
+	
+5 layer generator
+5 layer discriminator
+64 dataset
+4x4 in 
+28x28 out
+3 channels
+	0.45 seconds per epoch
+	
+5 layer generator
+5 layer discriminator
+64 dataset
+4x4 in 
+4x4 out
+3 channels
+	0.27 seconds per epoch

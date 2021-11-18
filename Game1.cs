@@ -16,6 +16,8 @@ using Tensorflow.Keras.Optimizers;
 using Tensorflow.Gradients;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Threading;
+using System.IO;
 
 namespace TensorDotNetProject
 {
@@ -34,19 +36,19 @@ namespace TensorDotNetProject
 
         int epochAmount = 1000;
         //int epochs = 2000; // Better effect, but longer time
-        int batch_size = 64;
+        int batch_size = 32;
 
         //int save_every = 10;
         //int display_every = 5;
-        string inputImagePath = "D:/";
+        string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Red";//needs a extra subfolder between location and data
 
         string saveImgPath = "D:/Pictures/aGanTest/imgs";
         string saveModelPath = "D:/Pictures/aGanTest/models";
 
         int latent_dim = 100;
 
-        int img_width = 32;
-        int img_height = 32;
+        int img_width = 4;
+        int img_height = 4;
         int channels = 3;
 
         static string scale_interpolation = "bilinear"; //Supports: bilinear, nearest*.  Unknown: area, lanczos3, lanczos5, gaussian.  Unimplemented: bicubic, mitchellcubic
@@ -65,7 +67,15 @@ namespace TensorDotNetProject
 
         //string deviceName = "";
         TimeSpan lastStopwatchTime = new TimeSpan(1);
-        string outputText = "";
+        const int maxDisplayCount = 10;
+        readonly List<string> DisplayText = new List<string>();
+        string OutputText { 
+            set
+            {
+                DisplayText.Add(value);
+                if (DisplayText.Count > maxDisplayCount)
+                    DisplayText.RemoveRange(0, DisplayText.Count - maxDisplayCount);
+            } }
 
         Texture2D outputImageFake;
         Texture2D outputImage;
@@ -111,7 +121,7 @@ namespace TensorDotNetProject
             font_Arial = Content.Load<SpriteFont>("Arial");
             debug = Content.Load<Texture2D>("Debug1");
 
-            PrepareData();
+            //PrepareData();
         }
 
         public void PrepareData()
@@ -127,30 +137,32 @@ namespace TensorDotNetProject
             }
 
 
-            System.IO.Directory.CreateDirectory(saveImgPath);
-            System.IO.Directory.CreateDirectory(saveModelPath);
+            Directory.CreateDirectory(saveImgPath);
+            Directory.CreateDirectory(saveModelPath);
 
             rescale = keras.layers.Rescaling(1f / 127.5f, -1f);
 
-            datasetV2 = keras.preprocessing.image_dataset_from_directory(inputImagePath, labels: null, color_mode: "rgb", batch_size: batch_size, image_size: (img_width, img_height),
-                validation_split: 0f, interpolation: scale_interpolation, subset: "training");
-            //NOTE: take and prefetch values are 'X * batchsize' so take(1) to get en entire batch
+            OutputText = "Finding images. Count: " + Directory.GetFiles(inputImagePath, "*", SearchOption.AllDirectories).Length;
 
-            //(Tensor, Tensor)[] a = datasetV2.take(1).ToArray();
-            datasetV2 = datasetV2.repeat(-1).map(x => rescale.Apply(x)).prefetch(2);//try without prefetch too
+            datasetV2 = keras.preprocessing.image_dataset_from_directory(inputImagePath, labels: null, color_mode: (channels == 3 ? "rgb" : "grayscale"), batch_size: batch_size, image_size: (img_width, img_height),
+                validation_split: 0f, interpolation: scale_interpolation, subset: "training");
+
+            datasetV2 = datasetV2.repeat(-1).shuffle(1).map(x => rescale.Apply(x)).prefetch(1);//try without prefetch too
+
+            //NOTE: take and prefetch values are 'X * batchsize' so take(1) to get en entire batch
         }
         //.map(x => rescale.Apply(x))
-        public Tensors TransformTensors(Tensors input)//DEBUG
-        {
-            tf.expand_dims(input, 3);
-            //for (int i = 0; i < input.Length; i++)
-            //{
-            //    var a = input[i];
-            //    input[i] = tf.expand_dims(input[i], 3);
-            //    //input[i] = np.expand_dims(input[i].numpy(), 3).astype(np.float32);
-            //}
-            return input;
-        }
+        //public Tensors TransformTensors(Tensors input)//DEBUG
+        //{
+        //    tf.expand_dims(input, 3);
+        //    //for (int i = 0; i < input.Length; i++)
+        //    //{
+        //    //    var a = input[i];
+        //    //    input[i] = tf.expand_dims(input[i], 3);
+        //    //    //input[i] = np.expand_dims(input[i].numpy(), 3).astype(np.float32);
+        //    //}
+        //    return input;
+        //}
 
         #endregion
 
@@ -162,26 +174,33 @@ namespace TensorDotNetProject
             Activation activation = null;
 
             Sequential model = keras.Sequential();
-            model.add(keras.layers.Dense((img_width / 4) * (img_height / 4) * 256 * 3, activation: activation, input_shape: 100));//2 bracket sets added around (int / 4) operations
+
+            //5 trainable layers max
+
+            //Dense 1
+            model.add(keras.layers.Dense((img_width / 4) * (img_height / 4) * 256 * channels, activation: activation, input_shape: latent_dim));//2 bracket sets added around (int / 4) operations
             model.add(keras.layers.BatchNormalization(momentum: 0.8f));
             model.add(keras.layers.LeakyReLU(LeakyReLU_alpha));
+            model.add(keras.layers.Reshape(((img_width / 4), (img_height / 4), 256 * channels)));//the first two seem to be the input divided by 4 (?)
 
-            model.add(keras.layers.Reshape(((img_width / 4), (img_height / 4), 256 * 3)));//the first two seem to be the input divided by 4 (?)
-
+            //Conv2D 1
             model.add(keras.layers.UpSampling2D());
             model.add(keras.layers.Conv2D(128, 3, 1, padding: "same", activation: activation));
             model.add(keras.layers.BatchNormalization(momentum: 0.8f));
             model.add(keras.layers.LeakyReLU(LeakyReLU_alpha));
 
+            //Conv2D 1
             model.add(keras.layers.UpSampling2D());
             model.add(keras.layers.Conv2D(64, 3, 1, padding: "same", activation: activation));
             model.add(keras.layers.BatchNormalization(momentum: 0.8f));
             model.add(keras.layers.LeakyReLU(LeakyReLU_alpha));
 
+            //Conv2D 1
             model.add(keras.layers.Conv2D(32, 3, 1, padding: "same", activation: activation));
             model.add(keras.layers.BatchNormalization(momentum: 0.8f));
             model.add(keras.layers.LeakyReLU(LeakyReLU_alpha));
 
+            //Conv2D 1
             model.add(keras.layers.Conv2D(channels, 3, 1, padding: "same", activation: "tanh"));
             model.summary();//may do nothing since this is not a console app
 
@@ -192,28 +211,36 @@ namespace TensorDotNetProject
             Activation activation = null;
             Tensor image = keras.Input(img_shape);
 
+            //6 trainable layers max
+
+            //Conv2D 1
             Tensors x = keras.layers.Conv2D(64, kernel_size: 5, strides: (2, 2), padding: "same", activation: activation).Apply(image);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             //x = keras.layers.Dropout(0.2f).Apply(x);
 
+            //Conv2D 1
             x = keras.layers.Conv2D(128, 5, (2, 2), "same", activation: activation).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
             //x = keras.layers.Dropout(0.2f).Apply(x);
 
+            //Conv2D 1
             x = keras.layers.Conv2D(256, 3, (2, 2), "same", activation: activation).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
 
+            //Conv2D 1
             x = keras.layers.Conv2D(512, 3, (2, 2), "same", activation: activation).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
 
+            //Conv2D 1
             x = keras.layers.Conv2D(1024, 3, (2, 2), "same", activation: activation).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
 
+            //Dense 1
             x = keras.layers.Flatten().Apply(x);
             x = keras.layers.Dense(1, activation: "sigmoid").Apply(x);
 
@@ -284,21 +311,19 @@ namespace TensorDotNetProject
         {
             try
             {
+                PrepareData();//moved here so the main thread does not block
+
                 //NDArray X_train = dataset.Train.Item1;
                 //X_train = X_train / 127.5 - 1; //Normalize the images to [-1, 1] (?)
                 //X_train = np.expand_dims(X_train, 3);
                 //X_train = X_train.astype(np.float32);
-
-                Tensorflow.Keras.Engine.Model Generator = Make_Generator_model();
-                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();
-                //Discriminator
 
                 float d_learnRate = 2e-4f;//0.0002 (?)
                 float g_learnRate = 2e-4f;//0.0002 (?)
 
                 OptimizerV2 d_optimizer = keras.optimizers.Adam(d_learnRate, 0.5f);
                 OptimizerV2 g_optimizer = keras.optimizers.Adam(g_learnRate, 0.5f);
-                
+
                 //(Tensor, Tensor)[] a = datasetV2.take(1).ToArray();
 
                 //Tensor[] arr = new Tensor[a.Length];//TODO this will only ever be one, skip this and use item1 directly
@@ -307,38 +332,42 @@ namespace TensorDotNetProject
                 //    arr[i] = a[0].Item1;
                 //}
 
+                Tensorflow.Keras.Engine.Model Generator = Make_Generator_model();//!Time: 124ms
+                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();//!Time: 73ms
+
+                //datasetTask.Wait();//This after the models so that they are made at the same time as datasetTask is running
 
                 for (currentEpoch = 0; currentEpoch <= epochAmount; currentEpoch++)
                 {
                     stopWatch.Start();
 
-                    images = datasetV2.take(1).ToArray()[0].Item1;
+                    images = datasetV2.take(1).First().Item1;//!Time: 24ms
                     //NDArray randomIndexes = np.random.randint(0, (int)X_train.shape[0], size: batch_size);//Array of random indexes, length is batch size (?)
                     //NDArray realImgs = X_train[randomIndexes];//get array of images using indexs, of length of index array (?)
 
                     //Tensor g_loss, d_loss, d_loss_real, d_loss_fake;
                     using (GradientTape tape = tf.GradientTape(true))
                     {
-                        NDArray noise = np.random.normal(0, 1, new int[] { batch_size, 100 });//Last 2 values are img count and latent dims (?)
+                        NDArray noise = np.random.normal(0, 1, new int[] { batch_size, latent_dim });//!Time: 10ms //Last 2 values are img count and latent dims (?)
                         noise = noise.astype(np.float32);
 
-                        fakeImgs = Generator.Apply(noise);
-                        Tensors discrimOutFake = Discriminator.Apply(fakeImgs);
-                        Tensors discrimOutReal = Discriminator.Apply(images);
+                        fakeImgs = Generator.Apply(noise);//!Time: 41ms 
+                        Tensors discrimOutFake = Discriminator.Apply(fakeImgs);//!Time: 47ms 
+                        Tensors discrimOutReal = Discriminator.Apply(images);//!Time: 45ms 
 
-                        d_loss_real = BinaryCrossentropy(discrimOutReal, tf.ones_like(discrimOutReal));
-                        d_loss_fake = BinaryCrossentropy(discrimOutFake, tf.zeros_like(discrimOutFake));
+                        d_loss_real = BinaryCrossentropy(discrimOutReal, tf.ones_like(discrimOutReal)); //!Time: 6ms
+                        d_loss_fake = BinaryCrossentropy(discrimOutFake, tf.zeros_like(discrimOutFake)); //!Time: 7ms
 
-                        g_loss = BinaryCrossentropy(discrimOutFake, tf.ones_like(discrimOutFake));
+                        g_loss = BinaryCrossentropy(discrimOutFake, tf.ones_like(discrimOutFake)); //!Time: 7ms
                         d_loss = d_loss_real + d_loss_fake;
 
                         //train Discriminator (?)
-                        Tensors grad = tape.gradient(d_loss, Discriminator.trainable_variables);
-                        d_optimizer.apply_gradients(zip(grad, Discriminator.trainable_variables.Select(x => x as ResourceVariable)));
+                        Tensors grad = tape.gradient(d_loss, Discriminator.trainable_variables);//!Time: 140 ms
+                        d_optimizer.apply_gradients(zip(grad, Discriminator.trainable_variables.Select(x => x as ResourceVariable)));//!Time: 10ms
 
                         //train Generator (?)
-                        grad = tape.gradient(g_loss, Generator.trainable_variables);
-                        g_optimizer.apply_gradients(zip(grad, Generator.trainable_variables.Select(x => x as ResourceVariable)));
+                        grad = tape.gradient(g_loss, Generator.trainable_variables);//!Time: 95ms
+                        g_optimizer.apply_gradients(zip(grad, Generator.trainable_variables.Select(x => x as ResourceVariable))); //!Time: 8ms
                     }
 
                     //if (currentEpoch % save_every == 0 && currentEpoch != 0)
@@ -352,7 +381,8 @@ namespace TensorDotNetProject
                     //    Discriminator.save_weights(saveModelPath + "/Model_" + currentEpoch + "_d.weights");
                     //}
 
-                    GC.Collect();//needed or else it will OOM before garbage collection starts
+                    //needed or else it will OOM before garbage collection starts
+                    GC.Collect();//!Time: 9ms 
 
                     stopWatch.Stop();
                     lastStopwatchTime = stopWatch.Elapsed;
@@ -361,9 +391,9 @@ namespace TensorDotNetProject
             }
             catch(Exception e)
             {
-                outputText = e.Message;
+                OutputText = e.Message;
             }
-}
+        }
 
         protected override void Update(GameTime gameTime)
         {
@@ -381,48 +411,76 @@ namespace TensorDotNetProject
 
             if (currentEpoch != lastDrawEpoch)
             {
-                //text generation
-                try
-                {
-                    float s_d_loss_real = tf.reduce_mean(d_loss_real).numpy();
-                    float s_d_loss_fake = tf.reduce_mean(d_loss_fake).numpy();
-                    float s_d_loss = tf.reduce_mean(d_loss).numpy();
-                    float s_g_loss = tf.reduce_mean(g_loss).numpy();
-                    outputText = $"Epoch: {currentEpoch} \nd_loss: {s_d_loss} (Real: {s_d_loss_real} + Fake: {s_d_loss_fake}) \ng_loss: {s_g_loss}";
-                }
-                catch(Exception E){
+                ThreadPool.QueueUserWorkItem(state => BuildOutputText());
 
-                }
+                ThreadPool.QueueUserWorkItem(state => BuildFakeImageData());
 
-                //image generation
-                float[] imageData = images[0].ToArray<float>();
-                float[] fakeImageData = fakeImgs[0][0].ToArray<float>();
-
-                int size = img_width * img_height;
-                Color[] dataCache = new Color[size];
-
-
-                for (int pixel = 0; pixel < size; pixel++)
-                {
-                    //the function applies the color according to the specified pixel
-                    dataCache[pixel] = new Color(Unscale(fakeImageData[(pixel * 3)]), Unscale(fakeImageData[(pixel * 3) + 1]), Unscale(fakeImageData[(pixel * 3) + 2]));//rgb
-
-                    //float val = imageData[pixel] * 0.5f + 0.5f;//grayscale
-                    //data[pixel] = new Color(val, val, val);//grayscale
-                }
-                outputImageFake.SetData(dataCache);
-
-
-                for (int pixel = 0; pixel < size; pixel++)
-                    dataCache[pixel] = new Color(Unscale(imageData[(pixel * 3)]), Unscale(imageData[(pixel * 3) + 1]), Unscale(imageData[(pixel * 3) + 2]));
-
-                outputImage.SetData(dataCache);
-
+                ThreadPool.QueueUserWorkItem(state => BuildRealImageData());
 
                 lastDrawEpoch = currentEpoch;
             }
 
             base.Update(gameTime);
+        }
+
+        public void BuildOutputText()
+        {
+            //text generation
+            try
+            {
+                float s_d_loss_real = tf.reduce_mean(d_loss_real).numpy();
+                float s_d_loss_fake = tf.reduce_mean(d_loss_fake).numpy();
+                float s_d_loss = tf.reduce_mean(d_loss).numpy();
+                float s_g_loss = tf.reduce_mean(g_loss).numpy();
+                OutputText = $"Epoch: {currentEpoch}   d_loss: {s_d_loss} (Real: {s_d_loss_real} + Fake: {s_d_loss_fake}) g_loss: {s_g_loss}";
+            }
+            catch (Exception E)
+            {
+
+            }
+        }
+
+        public void BuildFakeImageData()
+        {
+            float[] fakeImageData = fakeImgs[0][0].ToArray<float>();
+
+            int size = img_width * img_height;
+            Color[] dataCache = new Color[size];
+
+
+            for (int pixel = 0; pixel < size; pixel++)
+            {
+                //the function applies the color according to the specified pixel
+                if(channels == 3)
+                    dataCache[pixel] = new Color(Unscale(fakeImageData[(pixel * 3)]), Unscale(fakeImageData[(pixel * 3) + 1]), Unscale(fakeImageData[(pixel * 3) + 2]));//rgb
+                else
+                {
+                    float val = Unscale(fakeImageData[(pixel)]);//grayscale
+                    dataCache[pixel] = new Color(val, val, val);//grayscale
+                }
+            }
+            outputImageFake.SetData(dataCache);
+        }
+
+        public void BuildRealImageData()
+        {
+            float[] imageData = images[0].ToArray<float>();
+
+            int size = img_width * img_height;
+            Color[] dataCache = new Color[size];
+
+            for (int pixel = 0; pixel < size; pixel++)
+            {
+                if (channels == 3)
+                    dataCache[pixel] = new Color(Unscale(imageData[(pixel * 3)]), Unscale(imageData[(pixel * 3) + 1]), Unscale(imageData[(pixel * 3) + 2]));
+                else
+                {
+                    float val = Unscale(imageData[(pixel)]);//grayscale
+                    dataCache[pixel] = new Color(val, val, val);//grayscale
+                }
+            }
+
+            outputImage.SetData(dataCache);
         }
 
         public int Unscale(float val) => 
@@ -441,7 +499,8 @@ namespace TensorDotNetProject
                 SpriteBatch.Draw(outputImage, new Vector2(windowSize.X / 3, windowSize.Y / 2), null, Color.White, 0, default, 4f, default, default);
 
             SpriteBatch.DrawString(font_Arial, "Epoch time:  " + string.Format("{0:00}.{1:00}", lastStopwatchTime.Seconds, lastStopwatchTime.Milliseconds / 10) + " seconds.", new Vector2(20, 20), Color.White * 0.9f);
-            SpriteBatch.DrawString(font_Arial, outputText, new Vector2(20, 50), Color.White * 0.8f);
+            for (int i = 0; i < DisplayText.Count; i++)
+                SpriteBatch.DrawString(font_Arial, DisplayText[i], new Vector2(20, 50 + (20 * i)), Color.White * 0.8f);
             
             SpriteBatch.End();
 
