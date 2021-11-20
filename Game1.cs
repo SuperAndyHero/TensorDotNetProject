@@ -40,7 +40,7 @@ namespace TensorDotNetProject
 
         //int save_every = 10;
         //int display_every = 5;
-        string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Red";//needs a extra subfolder between location and data
+        string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Blue";//needs a extra subfolder between location and data
 
         string saveImgPath = "D:/Pictures/aGanTest/imgs";
         string saveModelPath = "D:/Pictures/aGanTest/models";
@@ -50,11 +50,14 @@ namespace TensorDotNetProject
         int img_width = 4;
         int img_height = 4;
         int channels = 3;
+        bool conditional = true;
 
         static string scale_interpolation = "bilinear"; //Supports: bilinear, nearest*.  Unknown: area, lanczos3, lanczos5, gaussian.  Unimplemented: bicubic, mitchellcubic
-
+        int conditionalInputs = 1;//1 or 0 supported if conditional is true
 
         Shape img_shape;
+
+        int generatorInputDims;
 
         //DatasetPass dataset;
 
@@ -87,6 +90,7 @@ namespace TensorDotNetProject
 
         Tensors fakeImgs;
         Tensor images;
+        Tensor classValue;
 
         bool StartedTraining = false;
         int currentEpoch = 0;
@@ -121,36 +125,50 @@ namespace TensorDotNetProject
             font_Arial = Content.Load<SpriteFont>("Arial");
             debug = Content.Load<Texture2D>("Debug1");
 
-            //PrepareData();
+            PrepareData();
         }
 
         public void PrepareData()
         {
-            //dataset = keras.datasets.mnist.load_data();
-
-
             img_shape = (img_width, img_height, channels);
+
+            generatorInputDims = latent_dim + (conditional ? conditionalInputs : 0);
 
             if (img_height % 4 != 0 || img_width % 4 != 0)
             {
                 throw new Exception("The width and height of the image must be a multiple of 4");
             }
 
-
             Directory.CreateDirectory(saveImgPath);
             Directory.CreateDirectory(saveModelPath);
 
             rescale = keras.layers.Rescaling(1f / 127.5f, -1f);
+        }
+
+        public void LoadDataset()
+        {
+            //dataset = keras.datasets.mnist.load_data();
 
             OutputText = "Finding images. Count: " + Directory.GetFiles(inputImagePath, "*", SearchOption.AllDirectories).Length;
 
-            datasetV2 = keras.preprocessing.image_dataset_from_directory(inputImagePath, labels: null, color_mode: (channels == 3 ? "rgb" : "grayscale"), batch_size: batch_size, image_size: (img_width, img_height),
+            datasetV2 = keras.preprocessing.image_dataset_from_directory(inputImagePath, labels: "inferred", label_mode: "int", 
+                color_mode: (channels == 3 ? "rgb" : "grayscale"), batch_size: batch_size, image_size: (img_width, img_height),
                 validation_split: 0f, interpolation: scale_interpolation, subset: "training");
-
-            datasetV2 = datasetV2.repeat(-1).shuffle(1).map(x => rescale.Apply(x)).prefetch(1);//try without prefetch too
+            //keras.preprocessing.text_dataset_from_directory
+            datasetV2 = datasetV2.repeat(-1).shuffle(1).map(x => ApplyRescaling(x)).prefetch(1);//try without prefetch too
+            //var b = datasetV2.take(1);
+            //Tensor dat = b.First().Item1;
+            //Tensor dat2 = b.First().Item2;
 
             //NOTE: take and prefetch values are 'X * batchsize' so take(1) to get en entire batch
         }
+
+        public Tensors ApplyRescaling(Tensors Input)
+        {
+            Input[0] = rescale.Apply(Input[0]);
+            return Input;
+        }
+
         //.map(x => rescale.Apply(x))
         //public Tensors TransformTensors(Tensors input)//DEBUG
         //{
@@ -178,7 +196,7 @@ namespace TensorDotNetProject
             //5 trainable layers max
 
             //Dense 1
-            model.add(keras.layers.Dense((img_width / 4) * (img_height / 4) * 256 * channels, activation: activation, input_shape: latent_dim));//2 bracket sets added around (int / 4) operations
+            model.add(keras.layers.Dense((img_width / 4) * (img_height / 4) * 256 * channels, activation: activation, input_shape: generatorInputDims));//2 bracket sets added around (int / 4) operations
             model.add(keras.layers.BatchNormalization(momentum: 0.8f));
             model.add(keras.layers.LeakyReLU(LeakyReLU_alpha));
             model.add(keras.layers.Reshape(((img_width / 4), (img_height / 4), 256 * channels)));//the first two seem to be the input divided by 4 (?)
@@ -311,12 +329,8 @@ namespace TensorDotNetProject
         {
             try
             {
-                PrepareData();//moved here so the main thread does not block
 
-                //NDArray X_train = dataset.Train.Item1;
-                //X_train = X_train / 127.5 - 1; //Normalize the images to [-1, 1] (?)
-                //X_train = np.expand_dims(X_train, 3);
-                //X_train = X_train.astype(np.float32);
+                LoadDataset();//moved here so the main thread does not block
 
                 float d_learnRate = 2e-4f;//0.0002 (?)
                 float g_learnRate = 2e-4f;//0.0002 (?)
@@ -324,32 +338,30 @@ namespace TensorDotNetProject
                 OptimizerV2 d_optimizer = keras.optimizers.Adam(d_learnRate, 0.5f);
                 OptimizerV2 g_optimizer = keras.optimizers.Adam(g_learnRate, 0.5f);
 
-                //(Tensor, Tensor)[] a = datasetV2.take(1).ToArray();
-
-                //Tensor[] arr = new Tensor[a.Length];//TODO this will only ever be one, skip this and use item1 directly
-                //for (int i = 0; i < a.Length; i++)
-                //{
-                //    arr[i] = a[0].Item1;
-                //}
-
                 Tensorflow.Keras.Engine.Model Generator = Make_Generator_model();//!Time: 124ms
-                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();//!Time: 73ms
-
-                //datasetTask.Wait();//This after the models so that they are made at the same time as datasetTask is running
+                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();//!Time: 73ms\
 
                 for (currentEpoch = 0; currentEpoch <= epochAmount; currentEpoch++)
                 {
                     stopWatch.Start();
 
-                    images = datasetV2.take(1).First().Item1;//!Time: 24ms
+                    var bth = datasetV2.take(1);
+                    (Tensor, Tensor) batch = bth.First();//!Time: 26ms
+                    images = batch.Item1;
+                    if(conditional)
+                        classValue = batch.Item2;
                     //NDArray randomIndexes = np.random.randint(0, (int)X_train.shape[0], size: batch_size);//Array of random indexes, length is batch size (?)
                     //NDArray realImgs = X_train[randomIndexes];//get array of images using indexs, of length of index array (?)
 
                     //Tensor g_loss, d_loss, d_loss_real, d_loss_fake;
-                    using (GradientTape tape = tf.GradientTape(true))
+                    using (GradientTape tape = tf.GradientTape(true))//!Time: 2ms
                     {
-                        NDArray noise = np.random.normal(0, 1, new int[] { batch_size, latent_dim });//!Time: 10ms //Last 2 values are img count and latent dims (?)
+                        NDArray noise = np.random.normal(0, 1, new int[] { batch_size, generatorInputDims });//!Time: 20ms //Last 2 values are img count and latent dims (?)
                         noise = noise.astype(np.float32);
+
+                        if(conditional)
+                            for(int i = 0; i < batch_size; i++)//!Time: 2ms
+                                noise[i, latent_dim] = (float)(int)classValue[i];//change this to set multiple with multiple inputs
 
                         fakeImgs = Generator.Apply(noise);//!Time: 41ms 
                         Tensors discrimOutFake = Discriminator.Apply(fakeImgs);//!Time: 47ms 
