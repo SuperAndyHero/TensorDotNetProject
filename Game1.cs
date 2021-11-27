@@ -43,7 +43,7 @@ namespace TensorDotNetProject
         //int save_every = 10;
         //int display_every = 5;
         //string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Blue";//needs a extra subfolder between location and data
-        string inputImagePath = "D:/Pictures/Datasets/mnist/trainingSet";//needs a extra subfolder between location and data
+        string inputImagePath = "D:/Pictures/Datasets/mnist/MiniTrainingSet";//needs a extra subfolder between location and data
 
         string saveImgPath = "D:/Pictures/aGanTest/imgs";
         string saveModelPath = "D:/Pictures/aGanTest/models";
@@ -232,13 +232,13 @@ namespace TensorDotNetProject
         {
             Activation activation = null;
             Tensor image = keras.Input(img_shape);
-            Tensor val2 = keras.Input(img_shape);
+            //Tensor val2 = keras.Input(img_shape);
 
             //6 trainable layers max
 
             //Conv2D 1
-            Tensors x = keras.layers.Concatenate().Apply(image, val2);
-            x = keras.layers.Conv2D(64, kernel_size: 5, strides: (2, 2), padding: "same", activation: activation).Apply(x);
+            //Tensors x = keras.layers.Concatenate().Apply(image, val2);
+            Tensors x = keras.layers.Conv2D(64, kernel_size: 5, strides: (2, 2), padding: "same", activation: activation).Apply(image);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             //x = keras.layers.Dropout(0.2f).Apply(x);
@@ -266,7 +266,7 @@ namespace TensorDotNetProject
 
             //Dense 1
             x = keras.layers.Flatten().Apply(x);
-            x = keras.layers.Dense(1, activation: "sigmoid").Apply(x);
+            x = keras.layers.Dense(2, activation: "sigmoid").Apply(x);
 
             Functional model = keras.Model(image, x);
             model.summary();
@@ -364,26 +364,29 @@ namespace TensorDotNetProject
                         NDArray noise = np.random.normal(0, 1, new int[] { batch_size, generatorInputDims });//!Time: 20ms //Last 2 values are img count and latent dims (?)
                         noise = noise.astype(np.float32);
 
-                        NDArray secondDiscrimInput = new NDArray((batch_size, img_width, img_height, channels), TF_DataType.TF_FLOAT);
+                        //NDArray secondDiscrimInput = new NDArray((batch_size, img_width, img_height, channels), TF_DataType.TF_FLOAT);
 
                         if (conditional)
                             for (int i = 0; i < batch_size; i++)//!Time: 2ms
                             {
                                 noise[i, latent_dim] = (float)(int)classValue[i];//change this to set multiple with multiple inputs
                                 //var a = secondDiscrimInput[i, 0, 0];
-                                secondDiscrimInput[i, 0, 0] = new float[] { 0f, 0f, (float)(int)classValue[i] };
+                                //secondDiscrimInput[i, 0, 0] = new float[] { 0f, 0f, (float)(int)classValue[i] };
                             }
 
                         fakeImgs = Generator.Apply(noise);//!Time: 41ms 
-                        Tensors discrimOutFake = Discriminator.Apply(fakeImgs, secondDiscrimInput);//!Time: 47ms 
-                        Tensors discrimOutReal = Discriminator.Apply(images, secondDiscrimInput);//!Time: 45ms 
+                        Tensor[] discrimOutFake = tf.split(Discriminator.Apply(fakeImgs), 2, 1);//!Time: 47ms 
+                        Tensor[] discrimOutReal = tf.split(Discriminator.Apply(images), 2, 1);//!Time: 45ms 
 
                         //Computes the cross-entropy loss between true labels and predicted labels.
-                        d_loss_real = BinaryCrossentropy(discrimOutReal, tf.ones_like(discrimOutReal)); //!Time: 6ms
-                        d_loss_fake = BinaryCrossentropy(discrimOutFake, tf.zeros_like(discrimOutFake)); //!Time: 7ms
+                        d_loss_real = BinaryCrossentropy(discrimOutReal[0], tf.ones_like(discrimOutReal[0])); //!Time: 6ms
+                        Tensor d_loss_real_class = BinaryCrossentropy(discrimOutReal[1], classValue); //!Time: 6ms
+                        //var test = tf.zeros_like(discrimOutFake[0]);
+                        d_loss_fake = BinaryCrossentropy(discrimOutFake[0], tf.zeros_like(discrimOutFake[0])); //!Time: 7ms
+                        Tensor d_loss_fake_class = BinaryCrossentropy(discrimOutFake[1], classValue); //!Time: 7ms
                         d_loss = d_loss_real + d_loss_fake; 
 
-                        g_loss = BinaryCrossentropy(discrimOutFake, tf.ones_like(discrimOutFake)); //!Time: 7ms
+                        g_loss = BinaryCrossentropy(discrimOutFake[0], tf.ones_like(discrimOutFake[0])); //!Time: 7ms
 
                         //train Discriminator (?)
                         Tensors grad = tape.gradient(d_loss, Discriminator.trainable_variables);//!Time: 140 ms
