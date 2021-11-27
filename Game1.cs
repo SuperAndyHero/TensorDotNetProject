@@ -24,6 +24,8 @@ namespace TensorDotNetProject
     public class Game1 : Game
     {
         //TODO: compare with base tutorial
+        //! If this reaches tries to run the models and instead hangs and OOMs then there may not be enough space on the disk
+        //! 7.6gb needed, less will impact training speed
 
         #region variables
 
@@ -36,19 +38,20 @@ namespace TensorDotNetProject
 
         int epochAmount = 1000;
         //int epochs = 2000; // Better effect, but longer time
-        int batch_size = 32;
+        int batch_size = 16;
 
         //int save_every = 10;
         //int display_every = 5;
-        string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Blue";//needs a extra subfolder between location and data
+        //string inputImagePath = "D:/Pictures/Datasets/SimpleDatasets/Blue";//needs a extra subfolder between location and data
+        string inputImagePath = "D:/Pictures/Datasets/mnist/trainingSet";//needs a extra subfolder between location and data
 
         string saveImgPath = "D:/Pictures/aGanTest/imgs";
         string saveModelPath = "D:/Pictures/aGanTest/models";
 
         int latent_dim = 100;
 
-        int img_width = 4;
-        int img_height = 4;
+        int img_width = 28;
+        int img_height = 28;
         int channels = 3;
         bool conditional = true;
 
@@ -150,12 +153,12 @@ namespace TensorDotNetProject
             //dataset = keras.datasets.mnist.load_data();
 
             OutputText = "Finding images. Count: " + Directory.GetFiles(inputImagePath, "*", SearchOption.AllDirectories).Length;
-
+            
             datasetV2 = keras.preprocessing.image_dataset_from_directory(inputImagePath, labels: "inferred", label_mode: "int", 
                 color_mode: (channels == 3 ? "rgb" : "grayscale"), batch_size: batch_size, image_size: (img_width, img_height),
                 validation_split: 0f, interpolation: scale_interpolation, subset: "training");
             //keras.preprocessing.text_dataset_from_directory
-            datasetV2 = datasetV2.repeat(-1).shuffle(1).map(x => ApplyRescaling(x)).prefetch(1);//try without prefetch too
+            datasetV2 = datasetV2.map(ApplyRescaling).repeat(-1).shuffle(1).prefetch(1);//try without prefetch too //.repeat(-1).shuffle(1)
             //var b = datasetV2.take(1);
             //Tensor dat = b.First().Item1;
             //Tensor dat2 = b.First().Item2;
@@ -165,8 +168,9 @@ namespace TensorDotNetProject
 
         public Tensors ApplyRescaling(Tensors Input)
         {
-            Input[0] = rescale.Apply(Input[0]);
-            return Input;
+            Tensor Input2 = Input[1];
+            Tensor thing2 = rescale.Apply(Input[0]);//this breaks when only doing one side and does not scale, if applied to both sides the labels are made null
+            return (thing2, Input2);
         }
 
         //.map(x => rescale.Apply(x))
@@ -228,11 +232,13 @@ namespace TensorDotNetProject
         {
             Activation activation = null;
             Tensor image = keras.Input(img_shape);
+            Tensor val2 = keras.Input(img_shape);
 
             //6 trainable layers max
 
             //Conv2D 1
-            Tensors x = keras.layers.Conv2D(64, kernel_size: 5, strides: (2, 2), padding: "same", activation: activation).Apply(image);
+            Tensors x = keras.layers.Concatenate().Apply(image, val2);
+            x = keras.layers.Conv2D(64, kernel_size: 5, strides: (2, 2), padding: "same", activation: activation).Apply(x);
             x = keras.layers.LeakyReLU(LeakyReLU_alpha).Apply(x);
             x = keras.layers.BatchNormalization(momentum: 0.8f).Apply(x);
             //x = keras.layers.Dropout(0.2f).Apply(x);
@@ -325,13 +331,10 @@ namespace TensorDotNetProject
 
         #endregion
 
-        public void Train()
+        public void Train()//https://www.tensorflow.org/guide/keras/customizing_what_happens_in_fit/
         {
             try
             {
-
-                LoadDataset();//moved here so the main thread does not block
-
                 float d_learnRate = 2e-4f;//0.0002 (?)
                 float g_learnRate = 2e-4f;//0.0002 (?)
 
@@ -339,8 +342,10 @@ namespace TensorDotNetProject
                 OptimizerV2 g_optimizer = keras.optimizers.Adam(g_learnRate, 0.5f);
 
                 Tensorflow.Keras.Engine.Model Generator = Make_Generator_model();//!Time: 124ms
-                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();//!Time: 73ms\
+                Tensorflow.Keras.Engine.Model Discriminator = Make_Discriminator_model();//!Time: 73ms
 
+                LoadDataset();//moved here so the main thread does not block
+                //Trainging loop
                 for (currentEpoch = 0; currentEpoch <= epochAmount; currentEpoch++)
                 {
                     stopWatch.Start();
@@ -359,19 +364,26 @@ namespace TensorDotNetProject
                         NDArray noise = np.random.normal(0, 1, new int[] { batch_size, generatorInputDims });//!Time: 20ms //Last 2 values are img count and latent dims (?)
                         noise = noise.astype(np.float32);
 
-                        if(conditional)
-                            for(int i = 0; i < batch_size; i++)//!Time: 2ms
+                        NDArray secondDiscrimInput = new NDArray((batch_size, img_width, img_height, channels), TF_DataType.TF_FLOAT);
+
+                        if (conditional)
+                            for (int i = 0; i < batch_size; i++)//!Time: 2ms
+                            {
                                 noise[i, latent_dim] = (float)(int)classValue[i];//change this to set multiple with multiple inputs
+                                //var a = secondDiscrimInput[i, 0, 0];
+                                secondDiscrimInput[i, 0, 0] = new float[] { 0f, 0f, (float)(int)classValue[i] };
+                            }
 
                         fakeImgs = Generator.Apply(noise);//!Time: 41ms 
-                        Tensors discrimOutFake = Discriminator.Apply(fakeImgs);//!Time: 47ms 
-                        Tensors discrimOutReal = Discriminator.Apply(images);//!Time: 45ms 
+                        Tensors discrimOutFake = Discriminator.Apply(fakeImgs, secondDiscrimInput);//!Time: 47ms 
+                        Tensors discrimOutReal = Discriminator.Apply(images, secondDiscrimInput);//!Time: 45ms 
 
+                        //Computes the cross-entropy loss between true labels and predicted labels.
                         d_loss_real = BinaryCrossentropy(discrimOutReal, tf.ones_like(discrimOutReal)); //!Time: 6ms
                         d_loss_fake = BinaryCrossentropy(discrimOutFake, tf.zeros_like(discrimOutFake)); //!Time: 7ms
+                        d_loss = d_loss_real + d_loss_fake; 
 
                         g_loss = BinaryCrossentropy(discrimOutFake, tf.ones_like(discrimOutFake)); //!Time: 7ms
-                        d_loss = d_loss_real + d_loss_fake;
 
                         //train Discriminator (?)
                         Tensors grad = tape.gradient(d_loss, Discriminator.trainable_variables);//!Time: 140 ms
